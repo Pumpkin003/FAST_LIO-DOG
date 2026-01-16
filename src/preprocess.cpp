@@ -81,6 +81,10 @@ void Preprocess::process(const sensor_msgs::PointCloud2::ConstPtr &msg, PointClo
   case MARSIM:
     sim_handler(msg);
     break;
+
+  case XT16:
+    xt16_handler(msg);
+    break;
   
   default:
     printf("Error LiDAR Type");
@@ -477,6 +481,175 @@ void Preprocess::sim_handler(const sensor_msgs::PointCloud2::ConstPtr &msg) {
         added_pt.normal_z = 0;
         added_pt.curvature = 0.0;
         pl_surf.points.push_back(added_pt);
+    }
+}
+
+void Preprocess::xt16_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
+{
+    pl_surf.clear();
+    pl_corn.clear();
+    pl_full.clear();
+
+    // 1. 替换为 Hesai 的点类型
+    pcl::PointCloud<xt16_ros::Point> pl_orig;
+    pcl::fromROSMsg(*msg, pl_orig);
+    int plsize = pl_orig.points.size();
+    if (plsize == 0) return;
+    pl_surf.reserve(plsize);
+
+    /*** 只有在没有提供点时间戳时，这些变量才起作用 ***/
+    double omega_l = 0.361 * SCAN_RATE;           // 扫描角速度
+    std::vector<bool> is_first(N_SCANS, true);
+    std::vector<double> yaw_fp(N_SCANS, 0.0);      // 第一点的偏航角
+    std::vector<float> yaw_last(N_SCANS, 0.0);     // 最后一点的偏航角
+    std::vector<float> time_last(N_SCANS, 0.0);    // 最后的偏移时间
+
+    // 2. 检查 Hesai 的时间戳字段 (.timestamp)
+    if (pl_orig.points[plsize - 1].timestamp > 0)
+    {
+      given_offset_time = true;
+    }
+    else
+    {
+      given_offset_time = false;
+      double yaw_first = atan2(pl_orig.points[0].y, pl_orig.points[0].x) * 57.29578;
+      double yaw_end  = yaw_first;
+      int layer_first = pl_orig.points[0].ring;
+      for (uint i = plsize - 1; i > 0; i--)
+      {
+        if (pl_orig.points[i].ring == layer_first)
+        {
+          yaw_end = atan2(pl_orig.points[i].y, pl_orig.points[i].x) * 57.29578;
+          break;
+        }
+      }
+    }
+
+    // 记录这一帧的起始时间，用于计算相对偏移
+    double time_head = pl_orig.points[0].timestamp;
+
+    if(feature_enabled)
+    {
+      for (int i = 0; i < N_SCANS; i++)
+      {
+        pl_buff[i].clear();
+        pl_buff[i].reserve(plsize);
+      }
+      
+      for (int i = 0; i < plsize; i++)
+      {
+        PointType added_pt;
+        added_pt.normal_x = 0;
+        added_pt.normal_y = 0;
+        added_pt.normal_z = 0;
+        int layer  = pl_orig.points[i].ring; // XT16 同样使用 ring
+        if (layer >= N_SCANS) continue;
+        added_pt.x = pl_orig.points[i].x;
+        added_pt.y = pl_orig.points[i].y;
+        added_pt.z = pl_orig.points[i].z;
+        added_pt.intensity = pl_orig.points[i].intensity;
+        
+        // 3. 计算相对时间戳（单位：ms）。Hesai 的 timestamp 通常是双精度绝对时间
+        added_pt.curvature = (pl_orig.points[i].timestamp - time_head) * 1000.f; 
+
+        if (!given_offset_time)
+        {
+          double yaw_angle = atan2(added_pt.y, added_pt.x) * 57.2957;
+          if (is_first[layer])
+          {
+              yaw_fp[layer] = yaw_angle;
+              is_first[layer] = false;
+              added_pt.curvature = 0.0;
+              yaw_last[layer] = yaw_angle;
+              time_last[layer] = added_pt.curvature;
+              continue;
+          }
+
+          if (yaw_angle <= yaw_fp[layer])
+            added_pt.curvature = (yaw_fp[layer] - yaw_angle) / omega_l;
+          else
+            added_pt.curvature = (yaw_fp[layer] - yaw_angle + 360.0) / omega_l;
+
+          if (added_pt.curvature < time_last[layer])  added_pt.curvature += 360.0 / omega_l;
+
+          yaw_last[layer] = yaw_angle;
+          time_last[layer] = added_pt.curvature;
+        }
+
+        pl_buff[layer].points.push_back(added_pt);
+      }
+
+      for (int j = 0; j < N_SCANS; j++)
+      {
+        PointCloudXYZI &pl = pl_buff[j];
+        int linesize = pl.size();
+        if (linesize < 2) continue;
+        vector<orgtype> &types = typess[j];
+        types.clear();
+        types.resize(linesize);
+        linesize--;
+        for (uint i = 0; i < linesize; i++)
+        {
+          types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
+          double vx = pl[i].x - pl[i + 1].x;
+          double vy = pl[i].y - pl[i + 1].y;
+          double vz = pl[i].z - pl[i + 1].z;
+          types[i].dista = vx * vx + vy * vy + vz * vz;
+        }
+        types[linesize].range = sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y);
+        give_feature(pl, types);
+      }
+    }
+    else
+    {
+      for (int i = 0; i < plsize; i++)
+      {
+        PointType added_pt;
+        added_pt.normal_x = 0;
+        added_pt.normal_y = 0;
+        added_pt.normal_z = 0;
+        added_pt.x = pl_orig.points[i].x;
+        added_pt.y = pl_orig.points[i].y;
+        added_pt.z = pl_orig.points[i].z;
+        added_pt.intensity = pl_orig.points[i].intensity;
+        
+        // 4. 同样计算相对时间
+        added_pt.curvature = (pl_orig.points[i].timestamp - time_head) * 1000.f;
+
+        if (!given_offset_time)
+        {
+          int layer = pl_orig.points[i].ring;
+          double yaw_angle = atan2(added_pt.y, added_pt.x) * 57.2957;
+
+          if (is_first[layer])
+          {
+              yaw_fp[layer] = yaw_angle;
+              is_first[layer] = false;
+              added_pt.curvature = 0.0;
+              yaw_last[layer] = yaw_angle;
+              time_last[layer] = added_pt.curvature;
+              continue;
+          }
+
+          if (yaw_angle <= yaw_fp[layer])
+            added_pt.curvature = (yaw_fp[layer] - yaw_angle) / omega_l;
+          else
+            added_pt.curvature = (yaw_fp[layer] - yaw_angle + 360.0) / omega_l;
+
+          if (added_pt.curvature < time_last[layer])  added_pt.curvature += 360.0 / omega_l;
+
+          yaw_last[layer] = yaw_angle;
+          time_last[layer] = added_pt.curvature;
+        }
+
+        if (i % point_filter_num == 0)
+        {
+          if(added_pt.x*added_pt.x + added_pt.y*added_pt.y + added_pt.z*added_pt.z > (blind * blind))
+          {
+            pl_surf.points.push_back(added_pt);
+          }
+        }
+      }
     }
 }
 
