@@ -245,7 +245,6 @@ Run:
 ```
 roslaunch fast_lio mapping_avia.launch
 rosbag play YOUR_DOWNLOADED.bag
-
 ```
 
 ### 4.2 Velodyne HDL-32E Rosbag

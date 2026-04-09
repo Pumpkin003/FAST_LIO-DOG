@@ -276,7 +276,7 @@ public:
 	}
 
 	// iterated error state EKF propogation
-	void predict(double &dt, processnoisecovariance &Q, const input &i_in){
+	void predict(double &dt, processnoisecovariance &Qc, const input &i_in){
 		flatted_state f_ = f(x_, i_in);
 		cov_ f_x_ = f_x(x_, i_in);
 		cov f_x_final;
@@ -378,7 +378,10 @@ public:
 		P_ = xp * P_ * xp.transpose() + (f_w1 * dt) * Q * (f_w1 * dt).transpose();
 	#else
 		F_x1 += f_x_final * dt;
-		P_ = (F_x1) * P_ * (F_x1).transpose() + (dt * f_w_final) * Q * (dt * f_w_final).transpose();
+		// P_ = (F_x1) * P_ * (F_x1).transpose() + (dt * f_w_final) * Q * (dt * f_w_final).transpose();
+
+		P_ = (F_x1) * P_ * (F_x1).transpose() + (f_w_final) * Qc * dt * (f_w_final).transpose();
+
 	#endif
 	}
 
