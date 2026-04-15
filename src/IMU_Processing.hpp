@@ -49,8 +49,8 @@ class ImuProcess
   void set_acc_cov(const V3D &scaler);
   void set_gyr_bias_cov(const V3D &b_g);
   void set_acc_bias_cov(const V3D &b_a);
-  // Eigen::Matrix<double, 12, 12> Q;//离散时间Q矩阵
-  Eigen::Matrix<double, 12, 12> Qc;//连续时间Q矩阵
+  Eigen::Matrix<double, 12, 12> Q;//离散时间Q矩阵
+  // Eigen::Matrix<double, 12, 12> Qc;//连续时间Q矩阵
   void Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr pcl_un_);
 
   ofstream fout_imu;
@@ -89,8 +89,8 @@ ImuProcess::ImuProcess()
     : b_first_frame_(true), imu_need_init_(true), start_timestamp_(-1)
 {
   init_iter_num = 1;
-  // Q = process_noise_cov();
-  Qc = process_noise_cov();
+  Q = process_noise_cov();
+  // Qc = process_noise_cov();
   cov_acc       = V3D(0.1, 0.1, 0.1);
   cov_gyr       = V3D(0.1, 0.1, 0.1);
   cov_bias_gyr  = V3D(0.0001, 0.0001, 0.0001);
@@ -281,18 +281,18 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     in.gyro = angvel_avr;
     // Q.block<3, 3>(0, 0).diagonal() = cov_gyr;
     // Q.block<3, 3>(3, 3).diagonal() = cov_acc;
-    // Q.block<3, 3>(6, 6).diagonal() = cov_bias_gyr;
-    // Q.block<3, 3>(9, 9).diagonal() = cov_bias_acc;
+    Q.block<3, 3>(6, 6).diagonal() = cov_bias_gyr;
+    Q.block<3, 3>(9, 9).diagonal() = cov_bias_acc;
     
 
-    Qc.block<3, 3>(0, 0).diagonal() = V3D(pow(0.44*M_PI/180/60,2),pow(0.44*M_PI/180/60,2),pow(0.44*M_PI/180/60,2)); //{0.44*pi/180/60}^2
-    Qc.block<3, 3>(3, 3).diagonal() = V3D(pow(60*1e-5,2),pow(60*1e-5,2),pow(60*1e-5,2));  //{60*1e-5}^2
+    Q.block<3, 3>(0, 0).diagonal() = V3D(pow(0.44*M_PI/180/60,2),pow(0.44*M_PI/180/60,2),pow(0.44*M_PI/180/60,2)); //{0.44*pi/180/60}^2
+    Q.block<3, 3>(3, 3).diagonal() = V3D(pow(60*1e-5,2),pow(60*1e-5,2),pow(60*1e-5,2));  //{60*1e-5}^2
 
     // Qc.block<3, 3>(0, 0).diagonal() = cov_gyr;
     // Qc.block<3, 3>(3, 3).diagonal() = cov_acc;
-    Qc.block<3, 3>(6, 6).diagonal() = V3D(pow(25*  0.4 * 8 * M_PI/180/3600,2),pow(25*  0.4*8*M_PI/180/3600,2),pow(25*  0.4*8*M_PI/180/3600,2)); //{8*pi/180/3600}^2 ,sigma=0.00387850945
-    Qc.block<3, 3>(9, 9).diagonal() = V3D(pow(25*  0.286*10*1e-5,2),pow(25*  0.286*10*1e-5,2),pow(25*  0.4*10*1e-5,2)); //{10*1e-5}^2 , sigma = 0.01
-    kf_state.predict(dt, Qc, in);
+    // Qc.block<3, 3>(6, 6).diagonal() = V3D(pow(25*  0.4 * 8 * M_PI/180/3600,2),pow(25*  0.4*8*M_PI/180/3600,2),pow(25*  0.4*8*M_PI/180/3600,2)); //{8*pi/180/3600}^2 ,sigma=0.00387850945
+    // Qc.block<3, 3>(9, 9).diagonal() = V3D(pow(25*  0.286*10*1e-5,2),pow(25*  0.286*10*1e-5,2),pow(25*  0.4*10*1e-5,2)); //{10*1e-5}^2 , sigma = 0.01
+    kf_state.predict(dt, Q, in);
 
     /* save the poses at each IMU measurements */
     imu_state = kf_state.get_x();
@@ -309,7 +309,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
   /*** calculated the pos and attitude prediction at the frame-end ***/
   double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
   dt = note * (pcl_end_time - imu_end_time);
-  kf_state.predict(dt, Qc, in);
+  kf_state.predict(dt, Q, in);
   
   imu_state = kf_state.get_x();
   last_imu_ = meas.imu.back();
